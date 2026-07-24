@@ -20,6 +20,18 @@ from uxplain.explainability.pdp_explainer import (
     PDPUncertaintyExplainer,
 )
 from uxplain.explainability.shap_explainer import ShapUncertaintyExplainer
+from uxplain.plotting import (
+    STYLE,
+    ice_curves,
+    lime_local,
+    pdp_curve,
+    pdp_importance,
+    pdp_interaction,
+    pdp_with_ice,
+    shap_bar,
+    shap_beeswarm,
+    shap_waterfall,
+)
 from uxplain.protocols import (
     ConformalClassifierProtocol,
     ConformalPredictorProtocol,
@@ -38,6 +50,7 @@ from uxplain.uq_explainer import (
 
 __all__ = [
     "__version__",
+    "STYLE",
     "ClassificationConformalMethod",
     "ClassificationExplanationResult",
     "ClassificationMetric",
@@ -57,4 +70,13 @@ __all__ = [
     "UncertaintyExplainerProtocol",
     "UncertaintyExplanationPipeline",
     "UncertaintyMetric",
+    "ice_curves",
+    "lime_local",
+    "pdp_curve",
+    "pdp_importance",
+    "pdp_interaction",
+    "pdp_with_ice",
+    "shap_bar",
+    "shap_beeswarm",
+    "shap_waterfall",
 ]

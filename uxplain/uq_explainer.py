@@ -167,6 +167,7 @@ class UncertaintyExplanationPipeline:
         upper_model=None,
         conformal_predictor: ConformalPredictorProtocol | None = None,
         explainer: UncertaintyExplainerProtocol | None = None,
+        fast_shap: bool = True,
     ):
         """
         Initialize pipeline.
@@ -224,6 +225,13 @@ class UncertaintyExplanationPipeline:
 
         explainer : optional
             Custom explainer instance. Overrides ``xai_method`` when provided.
+
+        fast_shap : bool
+            When ``xai_method="shap"``, use exact TreeSHAP on the component
+            models for metrics that are affine in them (e.g. CQR interval
+            width, which is the difference of the two quantile models). Falls
+            back to the generic explainer whenever that does not apply. Set to
+            ``False`` to always use the generic path.
         """
 
         self.confidence = confidence
@@ -304,6 +312,7 @@ class UncertaintyExplanationPipeline:
                 cp=self.cp,
                 confidence=self.confidence,
                 metric=self.uncertainty_metric,
+                fast_path=fast_shap,
             )
         elif xai_method == "lime":
             self.explainer = LimeUncertaintyExplainer(
