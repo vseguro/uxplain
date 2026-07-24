@@ -11,9 +11,9 @@ from uxplain.conformal.crepes_predictor import (
 )
 
 __all__ = [
+    "CQRConformalPredictor",
     "ClassificationConformalMethod",
     "ConformalMethod",
-    "CQRConformalPredictor",
     "CrepesConformalClassifier",
     "CrepesConformalPredictor",
 ]

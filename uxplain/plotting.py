@@ -22,25 +22,26 @@ That makes the primitives composable::
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
-import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, Normalize
+import matplotlib.pyplot as plt
 import numpy as np
 
 from .uncertainty.metrics import metric_label
 
 __all__ = [
     "STYLE",
+    "ice_curves",
+    "lime_local",
+    "pdp_curve",
+    "pdp_importance",
+    "pdp_interaction",
+    "pdp_with_ice",
     "shap_bar",
     "shap_beeswarm",
     "shap_waterfall",
-    "pdp_curve",
-    "ice_curves",
-    "pdp_with_ice",
-    "pdp_importance",
-    "pdp_interaction",
-    "lime_local",
 ]
 
 
