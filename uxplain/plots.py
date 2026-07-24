@@ -1,15 +1,30 @@
 """
-Visualization utilities for SHAP, PDP, LIME, and conformal-classification
-explanations.
+Figure builders for SHAP, PDP and LIME uncertainty explanations.
+
+These functions assemble complete figures (single panels or grids) out of the
+primitives in :mod:`uxplain.plotting`, which draw everything with plain
+``matplotlib``. Use the primitives directly when you want to place a plot in an
+``Axes`` you already control; use the ``generate_*_plots`` builders here when you
+just want the standard figure for a given explanation.
 """
 
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
 import numpy as np
-import shap
-from sklearn.inspection import PartialDependenceDisplay
 
+from .plotting import (
+    STYLE,
+    ice_curves,
+    lime_local,
+    pdp_curve,
+    pdp_importance,
+    pdp_interaction,
+    pdp_with_ice,
+    shap_bar,
+    shap_beeswarm,
+    shap_waterfall,
+)
 from .uncertainty.metrics import metric_label
 
 VALID_SHAP_KINDS = ("beeswarm", "bar", "waterfall", "summary")
@@ -30,51 +45,22 @@ def _validate_kinds(kinds, valid, method):
 
 
 def _close_new_figures(pre_existing: set[int]) -> None:
-    """Close every figure created since the ``pre_existing`` snapshot.
-
-    Use ``pre_existing = set(plt.get_fignums())`` before generating plots,
-    then call this after ``plt.show()`` to free memory without touching
-    figures the caller already had open.
-    """
+    """Close every figure created since the ``pre_existing`` snapshot."""
     for fnum in set(plt.get_fignums()) - pre_existing:
         plt.close(fnum)
 
 
-def _fix_waterfall_text_overlap(fig):
-    """
-    Reposition SHAP waterfall contribution labels that overlap with the
-    y-tick labels (feature names). For small negative bars, SHAP places
-    the value text at the arrow tip with right-alignment, which extends
-    further left and lands on top of the y-tick label. We detect overlaps
-    after rendering and shift the offending text well inside the chart
-    area with left alignment so it remains readable.
-    """
-    fig.canvas.draw()
-    ax = fig.axes[0]
-    renderer = fig.canvas.get_renderer()
-
-    ytick_bboxes = [
-        lbl.get_window_extent(renderer=renderer)
-        for lbl in ax.get_yticklabels()
-        if lbl.get_text()
-    ]
-    if not ytick_bboxes:
-        return
-
-    xlim = ax.get_xlim()
-    x_range = xlim[1] - xlim[0]
-    safe_x = xlim[0] + 0.08 * x_range
-
-    for txt in ax.texts:
-        if not txt.get_text() or txt.get_horizontalalignment() != "right":
-            continue
-        txt_bbox = txt.get_window_extent(renderer=renderer)
-        if any(txt_bbox.overlaps(yb) for yb in ytick_bboxes):
-            _, y = txt.get_position()
-            txt.set_position((safe_x, y))
-            txt.set_horizontalalignment("left")
-
-    fig.canvas.draw()
+def _grid(n_panels: int, figsize, per_panel=(5.5, 4.2), max_cols: int = 3):
+    """Create a subplot grid sized for ``n_panels``."""
+    ncols = min(max_cols, max(n_panels, 1))
+    nrows = int(np.ceil(n_panels / ncols))
+    if figsize is None:
+        figsize = (per_panel[0] * ncols, per_panel[1] * nrows)
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
+    axes = axes.ravel()
+    for ax in axes[n_panels:]:
+        ax.set_visible(False)
+    return fig, axes[:n_panels]
 
 
 def generate_shap_plots(
@@ -83,43 +69,34 @@ def generate_shap_plots(
     kinds: list[str] | None = None,
     feature_names: list[str] | None = None,
     waterfall_index: int | None = None,
-    figsize: tuple[float, float] = (10, 6),
+    figsize: tuple[float, float] = (9, 5),
     show: bool = True,
+    max_display: int | None = None,
 ):
     """
-    Generate SHAP plots.
+    Build the standard SHAP figures for an uncertainty explanation.
 
     Parameters
     ----------
     explanation
-        SHAP explanation object (``shap.Explanation``).
-
+        SHAP explanation with ``.values`` and, ideally, ``.data`` and
+        ``.base_values``.
     X : np.ndarray, optional
-
+        Feature values used to colour the beeswarm. Falls back to
+        ``explanation.data``.
     kinds : list of str, optional
-        Which plots to generate. Options: "beeswarm",
-        "bar", "waterfall", "summary".
-        Defaults to ["beeswarm", "bar", "waterfall"].
-
-    feature_names : list of str, optional
-        Feature names for axis labels.
-
-    waterfall_index : int or None
-        Sample index for waterfall plot. When ``None``, auto-selects
-        the instance with the highest total absolute SHAP contribution.
-
-    figsize : tuple of (width, height), optional
-        Figure size in inches for each plot. Default ``(10, 6)``.
-        The waterfall plot enforces a minimum width of 12 inches so that
-        contribution labels do not overlap with feature names.
-
-    show : bool
-        Whether to display plots.
+        Any of ``"bar"``, ``"beeswarm"``, ``"waterfall"``, ``"summary"``
+        (an alias of ``"beeswarm"``). Defaults to all three main kinds.
+    waterfall_index : int, optional
+        Sample to decompose. When ``None``, the instance with the largest
+        total absolute contribution is chosen.
+    max_display : int, optional
+        Cap on how many features each plot shows.
 
     Returns
     -------
     dict
-        Dictionary with matplotlib figures.
+        Maps each kind to its ``matplotlib`` figure.
     """
 
     if kinds is None:
@@ -131,70 +108,40 @@ def generate_shap_plots(
     if feature_names is not None:
         explanation.feature_names = feature_names
 
+    values = np.asarray(explanation.values, dtype=float)
+    if values.ndim == 1:
+        values = values[None, :]
+
     auto_selected = waterfall_index is None
     if auto_selected:
-        waterfall_index = int(np.abs(explanation.values).sum(axis=1).argmax())
-
-    metric_name = metric_label(getattr(explanation, "metric", "width"))
-    metric_text = metric_name.lower()
+        waterfall_index = int(np.abs(values).sum(axis=1).argmax())
 
     figures = {}
 
-    if "summary" in kinds:
-        plt.figure(figsize=figsize)
-        shap.summary_plot(
-            explanation,
-            X,
-            show=False,
-            rng=np.random.default_rng(0),
-            plot_size=figsize,
-        )
-        fig = plt.gcf()
-        fig.suptitle(f"SHAP summary — Uncertainty metric ({metric_text})", y=1.01, fontsize=11)
-        figures["summary"] = fig
-
     if "bar" in kinds:
-        plt.figure(figsize=figsize)
-        shap.plots.bar(
-            explanation,
-            show=False,
-        )
-        fig = plt.gcf()
-        fig.set_size_inches(*figsize)
-        fig.suptitle(f"SHAP bar — Uncertainty metric ({metric_text})", y=1.01, fontsize=11)
-        figures["bar"] = fig
+        ax = shap_bar(explanation, feature_names=feature_names,
+                      max_display=max_display, figsize=figsize)
+        figures["bar"] = ax.figure
 
-    if "beeswarm" in kinds:
-        plt.figure(figsize=figsize)
-        shap.plots.beeswarm(
-            explanation,
-            show=False,
-        )
-        fig = plt.gcf()
-        fig.set_size_inches(*figsize)
-        fig.suptitle(f"SHAP beeswarm — Uncertainty metric ({metric_text})", y=1.01, fontsize=11)
-        figures["beeswarm"] = fig
+    # "summary" is kept as an alias of "beeswarm"; when both are requested each
+    # gets its own figure so callers can style them independently.
+    for key in ("beeswarm", "summary"):
+        if key in kinds:
+            ax = shap_beeswarm(explanation, X=X, feature_names=feature_names,
+                               max_display=max_display, figsize=figsize)
+            figures[key] = ax.figure
 
     if "waterfall" in kinds:
-        plt.figure(figsize=figsize)
-        shap.plots.waterfall(
-            explanation[waterfall_index],
-            show=False,
-        )
-        fig = plt.gcf()
-        w, h = figsize
-        fig.set_size_inches(max(w, 12), h)
-        _fix_waterfall_text_overlap(fig)
-        sample_label = (
-            f"Highest SHAP contribution instance (sample {waterfall_index})"
-            if auto_selected
-            else f"SHAP waterfall — sample {waterfall_index}"
-        )
-        fig.suptitle(
-            f"{sample_label} — Uncertainty metric ({metric_text})",
-            y=1.01, fontsize=11,
-        )
-        figures["waterfall"] = fig
+        title = None
+        if auto_selected:
+            metric_txt = metric_label(getattr(explanation, "metric", "width"))
+            title = (f"Highest-contribution instance (sample {waterfall_index})"
+                     f" — {metric_txt}")
+        ax = shap_waterfall(explanation, index=waterfall_index,
+                            feature_names=feature_names,
+                            max_display=max_display or 10,
+                            figsize=figsize, title=title)
+        figures["waterfall"] = ax.figure
 
     if show:
         plt.show()
@@ -212,39 +159,19 @@ def generate_lime_plots(
     sample_index: int = 0,
     figsize: tuple[float, float] | None = None,
     show: bool = True,
+    max_display: int | None = None,
 ) -> dict:
     """
-    Generate LIME plots from a ``LIMEExplanation`` object.
-
-    Uses LIME's native ``as_pyplot_figure()`` when raw explanations are
-    available (the default for explanations produced by this library).
+    Build LIME figures from a ``LIMEExplanation``.
 
     Parameters
     ----------
     explanation : LIMEExplanation
         Output of ``LimeUncertaintyExplainer.explain()``.
-
     kinds : list of str, optional
-        Which plots to generate. Options:
-
-        - ``"local"``  — LIME coefficients for a single sample
-
-        Defaults to ``["local"]``.
-
+        Only ``"local"`` is available. Defaults to ``["local"]``.
     sample_index : int
-        Sample row to highlight in the ``"local"`` plot.
-
-    figsize : tuple of (width, height), optional
-        Figure size in inches. When ``None``, scales height with the
-        number of features (``(8, max(4, 0.5 * n_features))``).
-
-    show : bool
-        Whether to call ``plt.show()``.
-
-    Returns
-    -------
-    dict
-        Dictionary mapping plot kind to matplotlib figure.
+        Row of ``local_coefficients`` to plot.
     """
 
     if kinds is None:
@@ -256,43 +183,19 @@ def generate_lime_plots(
     if sample_index is None:
         sample_index = 0
 
-    metric_text = metric_label(getattr(explanation, "metric", "width")).lower()
+    metric_name = metric_label(getattr(explanation, "metric", "width"))
+    names = explanation.feature_names
     figures = {}
 
-    n_features = len(explanation.feature_names) if explanation.feature_names is not None else 0
     if figsize is None:
-        figsize = (8, max(4, 0.5 * n_features))
+        figsize = (9, max(4.0, 0.55 * len(names)))
 
     if "local" in kinds:
-        raw = getattr(explanation, "raw_explanations", None)
-        if raw is not None:
-            exp = raw[sample_index]
-            fig = exp.as_pyplot_figure(label=1)
-            fig.set_size_inches(*figsize)
-            ax = fig.axes[0]
-            ax.set_title(
-                f"LIME — Local explanation (sample {sample_index})\n"
-                f"Uncertainty metric: {metric_text}",
-                fontsize=10,
-            )
-            ax.set_xlabel(f"LIME coefficient (effect on {metric_text})", fontsize=9)
-            ax.tick_params(labelsize=8)
-            fig.tight_layout()
-        else:
-            fnames = explanation.feature_names
-            coefs = explanation.local_coefficients[sample_index]
-            order = np.argsort(np.abs(coefs))
-            labels = [fnames[i] for i in order]
-            colors = ["tomato" if c >= 0 else "steelblue" for c in coefs[order]]
-            fig, ax = plt.subplots(figsize=figsize)
-            bars = ax.barh(labels, coefs[order], color=colors, edgecolor="black", linewidth=0.5)
-            ax.bar_label(bars, fmt="%.4f", padding=3, fontsize=8)
-            ax.axvline(0, color="black", linewidth=0.8)
-            ax.set_xlabel(f"LIME coefficient (effect on {metric_text})")
-            ax.set_title(f"LIME — Local explanation — Uncertainty metric ({metric_text})")
-            ax.grid(True, axis="x", linestyle="--", alpha=0.4)
-            fig.tight_layout()
-        figures["local"] = fig
+        coefs = np.asarray(explanation.local_coefficients)[sample_index]
+        ax = lime_local(coefs, names, figsize=figsize,
+                        max_display=max_display, metric_name=metric_name,
+                        sample_index=sample_index)
+        figures["local"] = ax.figure
 
     if show:
         plt.show()
@@ -306,6 +209,7 @@ _PDP_KIND_REQUIREMENTS = {
     "ice": ("individual", "both"),
     "pdp_ice": ("both",),
 }
+
 
 def _validate_pdp_kinds(kinds: list[str], explanation_kind: str) -> None:
     for plot_kind in kinds:
@@ -329,44 +233,24 @@ def generate_pdp_plots(
     show: bool = True,
 ) -> dict:
     """
-    Generate PDP plots from a ``PDPExplanation`` object.
+    Build partial-dependence figures from a ``PDPExplanation``.
 
     Parameters
     ----------
     explanation : PDPExplanation
         Output of ``PDPUncertaintyExplainer.explain()``.
-
     kinds : list of str, optional
-        Which plots to generate. Options:
-
-        - ``"pdp"``        — average partial dependence line per feature
-        - ``"ice"``        — individual conditional expectation lines
-        - ``"pdp_ice"``    — PDP overlaid on ICE lines
-        - ``"pdp_2d"``     — 2D interaction heatmap per feature pair
-        - ``"importance"`` — global PDP-based feature importance
-          (std of each feature's PDP curve, Greenwell et al. 2018)
-
-        Defaults to ``["pdp"]``.
-
-    feature_names : list of str, optional
-        Overrides ``explanation.feature_names`` for axis labels.
-
+        Any of ``"pdp"``, ``"ice"``, ``"pdp_ice"``, ``"pdp_2d"``,
+        ``"importance"``.
     max_ice_lines : int
-        Maximum number of ICE lines to draw per feature. When there are
-        more samples than this limit, a random subset is drawn to avoid
-        overplotting. Default is 80.
-
-    figsize : tuple of (width, height), optional
-        Figure size in inches. When ``None``, scales with the number of
-        features (~5 inches per column, 3.5 per row, 3-col grid).
-
-    show : bool
-        Whether to call ``plt.show()``.
+        Cap on ICE curves drawn per feature.
+    figsize : tuple, optional
+        Size of the whole figure. Scales with the panel count when ``None``.
 
     Returns
     -------
     dict
-        Dictionary mapping plot kind to matplotlib figure.
+        Maps each kind to its ``matplotlib`` figure.
     """
 
     if kinds is None:
@@ -386,255 +270,84 @@ def generate_pdp_plots(
     if feature_names is not None:
         explanation.feature_names = feature_names
 
-    def _fname(i: int) -> str:
-        if explanation.feature_names is not None and i < len(explanation.feature_names):
-            return explanation.feature_names[i]
-        return f"Feature {explanation.features[i]}"
-
     metric_name = metric_label(getattr(explanation, "metric", "width"))
-    metric_text = metric_name.lower()
-
     n = len(explanation.features)
     figures = {}
 
-    def _auto_figsize(n_panels: int) -> tuple[float, float]:
-        if figsize is not None:
-            return figsize
-        ncols = min(3, max(n_panels, 1))
-        nrows = int(np.ceil(n_panels / ncols))
-        return (5 * ncols, 3.5 * nrows)
+    def _fname(i: int) -> str:
+        feat_idx = explanation.features[i]
+        names = explanation.feature_names
+        if names is not None and feat_idx < len(names):
+            return names[feat_idx]
+        return f"Feature {feat_idx}"
 
-    use_native = (
-        n > 0
-        and getattr(explanation, "pd_results_raw", None) is not None
-        and getattr(explanation, "deciles_", None) is not None
-    )
-
-    if use_native:
-        # Resolve labels against the ACTUAL feature index in `explanation.features`,
-        # not the display position. Otherwise a call with e.g. features=[4]
-        # would label the panel with feature_names[0] instead of feature_names[4].
-        def _resolved_fname(i: int) -> str:
-            feat_idx = explanation.features[i]
-            if (
-                explanation.feature_names is not None
-                and feat_idx < len(explanation.feature_names)
-            ):
-                return explanation.feature_names[feat_idx]
-            return f"Feature {feat_idx}"
-
-        fnames_display = [_resolved_fname(i) for i in range(n)]
-        features_for_display = [(i,) for i in range(n)]
-
-        def _make_display(kind="average", subsample=None):
-            kwargs = dict(
-                pd_results=explanation.pd_results_raw,
-                features=features_for_display,
-                feature_names=fnames_display,
-                target_idx=0,
-                deciles=explanation.deciles_,
-                kind=kind,
-            )
-            if subsample is not None:
-                kwargs["subsample"] = subsample
-            return PartialDependenceDisplay(**kwargs)
-
-        def _style_pdp_fig(fig, title):
-            for ax in np.array(fig.axes).ravel():
-                if ax is not None and ax.get_visible():
-                    ax.set_ylabel(metric_name, fontsize=9)
-                    ax.grid(True, linestyle="--", alpha=0.35)
-                    ax.spines["top"].set_visible(False)
-                    ax.spines["right"].set_visible(False)
-            fig.suptitle(title, y=1.01, fontsize=11)
+    def _suptitle(fig, text):
+        # Only label the figure as a whole when it holds more than one panel.
+        if len(fig.axes) > 1:
+            fig.suptitle(text, fontsize=STYLE["title_size"] + 2)
             fig.tight_layout()
 
-        # --- PDP ---
-        if "pdp" in kinds:
-            display = _make_display(kind="average")
-            display.plot(
-                n_cols=min(3, n),
-                line_kw={"color": "tomato", "lw": 2},
-            )
-            display.figure_.set_size_inches(*_auto_figsize(n))
-            _style_pdp_fig(
-                display.figure_,
-                f"Partial Dependence — Uncertainty metric ({metric_text})",
-            )
-            figures["pdp"] = display.figure_
+    if "pdp" in kinds and n:
+        fig, axes = _grid(n, figsize)
+        for i, ax in enumerate(axes):
+            pdp_curve(explanation.grid_values[i], explanation.values[i], ax=ax,
+                      feature_name=_fname(i), metric_name=metric_name,
+                      title=f"PDP — {_fname(i)}" if n > 1 else None)
+        _suptitle(fig, f"Partial dependence — {metric_name}")
+        figures["pdp"] = fig
 
-        # --- ICE ---
-        if "ice" in kinds and explanation.individual is not None:
-            display = _make_display(kind="individual", subsample=max_ice_lines)
-            display.plot(
-                n_cols=min(3, n),
-                ice_lines_kw={"color": "steelblue", "lw": 0.7, "alpha": 0.3},
-            )
-            display.figure_.set_size_inches(*_auto_figsize(n))
-            _style_pdp_fig(
-                display.figure_,
-                f"ICE — Uncertainty metric ({metric_text})",
-            )
-            figures["ice"] = display.figure_
+    if "ice" in kinds and n and explanation.individual is not None:
+        fig, axes = _grid(n, figsize)
+        for i, ax in enumerate(axes):
+            ice_curves(explanation.grid_values[i], explanation.individual[i],
+                       ax=ax, feature_name=_fname(i), metric_name=metric_name,
+                       max_lines=max_ice_lines,
+                       title=f"ICE — {_fname(i)}" if n > 1 else None)
+        _suptitle(fig, f"ICE — {metric_name}")
+        figures["ice"] = fig
 
-        # --- PDP + ICE overlay ---
-        if "pdp_ice" in kinds and explanation.individual is not None:
-            display = _make_display(kind="both", subsample=max_ice_lines)
-            display.plot(
-                n_cols=min(3, n),
-                ice_lines_kw={"color": "steelblue", "lw": 0.7, "alpha": 0.25},
-                pd_line_kw={"color": "tomato", "lw": 2.5, "label": "PDP"},
-            )
-            display.figure_.set_size_inches(*_auto_figsize(n))
-            _style_pdp_fig(
-                display.figure_,
-                f"PDP + ICE — Uncertainty metric ({metric_text})",
-            )
-            figures["pdp_ice"] = display.figure_
+    if "pdp_ice" in kinds and n and explanation.individual is not None:
+        fig, axes = _grid(n, figsize)
+        for i, ax in enumerate(axes):
+            pdp_with_ice(explanation.grid_values[i], explanation.values[i],
+                         explanation.individual[i], ax=ax,
+                         feature_name=_fname(i), metric_name=metric_name,
+                         max_lines=max_ice_lines,
+                         title=f"PDP + ICE — {_fname(i)}" if n > 1 else None)
+        _suptitle(fig, f"PDP + ICE — {metric_name}")
+        figures["pdp_ice"] = fig
 
-    else:
-        # Fallback: manual plots from stored values
-        if "pdp" in kinds and n > 0:
-            ncols = min(3, n)
-            nrows = int(np.ceil(n / ncols))
-            fig, axes = plt.subplots(nrows, ncols, figsize=_auto_figsize(n))
-            axes = np.array(axes).flatten()
-            for i in range(n):
-                ax = axes[i]
-                ax.plot(explanation.grid_values[i], explanation.values[i], lw=2, color="tomato")
-                ax.set_xlabel(_fname(i))
-                ax.set_ylabel(metric_name)
-                ax.set_title(f"PDP — {_fname(i)}")
-                ax.grid(True, linestyle="--", alpha=0.4)
-                ax.spines["top"].set_visible(False)
-                ax.spines["right"].set_visible(False)
-            for ax in axes[n:]:
-                ax.set_visible(False)
-            fig.suptitle(f"Partial Dependence — Uncertainty metric ({metric_text})", y=1.01)
-            fig.tight_layout()
-            figures["pdp"] = fig
-
-        if "ice" in kinds and n > 0:
-            ncols = min(3, n)
-            nrows = int(np.ceil(n / ncols))
-            fig, axes = plt.subplots(nrows, ncols, figsize=_auto_figsize(n))
-            axes = np.array(axes).flatten()
-            for i in range(n):
-                ax = axes[i]
-                if explanation.individual is None:
-                    ax.set_title(f"ICE — {_fname(i)}\n(no individual data)")
-                    continue
-                lines = explanation.individual[i]
-                if len(lines) > max_ice_lines:
-                    rng = np.random.default_rng(0)
-                    idx = rng.choice(len(lines), max_ice_lines, replace=False)
-                    lines = lines[idx]
-                alpha = max(0.15, min(0.5, 30 / len(lines)))
-                for line in lines:
-                    ax.plot(explanation.grid_values[i], line, lw=0.7, alpha=alpha, color="steelblue")
-                ax.set_xlabel(_fname(i))
-                ax.set_ylabel(metric_name)
-                ax.set_title(f"ICE — {_fname(i)}")
-                ax.grid(True, linestyle="--", alpha=0.4)
-                ax.spines["top"].set_visible(False)
-                ax.spines["right"].set_visible(False)
-            for ax in axes[n:]:
-                ax.set_visible(False)
-            fig.suptitle(f"ICE — Uncertainty metric ({metric_text})", y=1.01)
-            fig.tight_layout()
-            figures["ice"] = fig
-
-        if "pdp_ice" in kinds and n > 0:
-            ncols = min(3, n)
-            nrows = int(np.ceil(n / ncols))
-            fig, axes = plt.subplots(nrows, ncols, figsize=_auto_figsize(n))
-            axes = np.array(axes).flatten()
-            for i in range(n):
-                ax = axes[i]
-                if explanation.individual is not None:
-                    lines = explanation.individual[i]
-                    if len(lines) > max_ice_lines:
-                        rng = np.random.default_rng(0)
-                        idx = rng.choice(len(lines), max_ice_lines, replace=False)
-                        lines = lines[idx]
-                    alpha = max(0.12, min(0.4, 25 / len(lines)))
-                    for line in lines:
-                        ax.plot(explanation.grid_values[i], line, lw=0.7, alpha=alpha, color="steelblue")
-                ax.plot(
-                    explanation.grid_values[i], explanation.values[i],
-                    lw=3, color="tomato", label="PDP", zorder=5,
-                )
-                ax.set_xlabel(_fname(i))
-                ax.set_ylabel(metric_name)
-                ax.set_title(f"PDP + ICE — {_fname(i)}")
-                ax.legend(fontsize=9, framealpha=0.85)
-                ax.grid(True, linestyle="--", alpha=0.4)
-                ax.spines["top"].set_visible(False)
-                ax.spines["right"].set_visible(False)
-            for ax in axes[n:]:
-                ax.set_visible(False)
-            fig.suptitle(f"PDP + ICE — Uncertainty metric ({metric_text})", y=1.01)
-            fig.tight_layout()
-            figures["pdp_ice"] = fig
-
-    # --- Global PDP-based importance (Greenwell et al., 2018) ---
-    if "importance" in kinds and n > 0:
-        importance = getattr(explanation, "importance", None)
+    if "importance" in kinds and n:
+        importance = explanation.importance
         if importance is None:
             importance = [float(np.std(v)) for v in explanation.values]
-        importance = np.asarray(importance, dtype=float)
+        ax = pdp_importance(importance, [_fname(i) for i in range(n)],
+                            figsize=figsize or (8, max(3.0, 0.6 * n + 1.5)),
+                            metric_name=metric_name)
+        figures["importance"] = ax.figure
 
-        # Resolve labels against the real feature index, not display position.
-        def _bar_fname(i: int) -> str:
-            feat_idx = explanation.features[i]
-            if (
-                explanation.feature_names is not None
-                and feat_idx < len(explanation.feature_names)
-            ):
-                return explanation.feature_names[feat_idx]
-            return f"Feature {feat_idx}"
-
-        order = np.argsort(importance)  # ascending → largest on top in barh
-        labels = [_bar_fname(i) for i in order]
-
-        fig, ax = plt.subplots(
-            figsize=figsize or (7, max(2.5, 0.5 * n + 1))
-        )
-        y = np.arange(n)
-        bars = ax.barh(
-            y, importance[order], color="tomato", edgecolor="black", linewidth=0.5
-        )
-        ax.set_yticks(y)
-        ax.set_yticklabels(labels)
-        ax.bar_label(bars, fmt="%.3f", padding=3, fontsize=8)
-        ax.set_xlabel(f"PDP importance (std of {metric_text} curve)")
-        ax.set_title(
-            f"PDP feature importance — Uncertainty metric ({metric_text})"
-        )
-        ax.grid(True, axis="x", linestyle="--", alpha=0.4)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        fig.tight_layout()
-        figures["importance"] = fig
-
-    # --- 2D PDP heatmaps — native sklearn PartialDependenceDisplay ---
     if "pdp_2d" in kinds:
-        display_2d = getattr(explanation, "display_2d_", None)
-        if display_2d is None:
+        pairs = explanation.feature_pairs or []
+        if not pairs or explanation.values_2d is None:
             raise ValueError(
                 'plot_kind="pdp_2d" requires the explainer to be fit with '
-                "at least one feature pair as a tuple, e.g. "
-                "features=[(0, 1)]. No 2D partial dependence was computed."
+                "at least one feature pair as a tuple, e.g. features=[(0, 1)]. "
+                "No 2D partial dependence was computed."
             )
-        display_2d.plot(contour_kw={"cmap": "RdYlBu_r"})
-        fig = display_2d.figure_
-        n_pairs = len(getattr(explanation, "feature_pairs", None) or [])
-        fig.set_size_inches(*_auto_figsize(n_pairs))
-        fig.suptitle(
-            f"2D Partial Dependence — Uncertainty metric ({metric_text})",
-            y=1.01, fontsize=11,
-        )
-        fig.tight_layout()
+        names = explanation.feature_names
+        fig, axes = _grid(len(pairs), figsize, per_panel=(6.5, 5.0), max_cols=2)
+        for i, ax in enumerate(axes):
+            gx, gy = explanation.grid_values_2d[i]
+            fa, fb = pairs[i]
+            labels = (
+                names[fa] if names is not None and fa < len(names) else f"Feature {fa}",
+                names[fb] if names is not None and fb < len(names) else f"Feature {fb}",
+            )
+            pdp_interaction(gx, gy, explanation.values_2d[i], ax=ax,
+                            feature_names=labels, metric_name=metric_name,
+                            title=f"{labels[0]} × {labels[1]}"
+                            if len(pairs) > 1 else None)
+        _suptitle(fig, f"Two-way partial dependence — {metric_name}")
         figures["pdp_2d"] = fig
 
     if show:
@@ -642,5 +355,3 @@ def generate_pdp_plots(
         _close_new_figures(pre_figs)
 
     return figures
-
-
