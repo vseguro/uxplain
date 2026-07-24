@@ -51,12 +51,12 @@ import pandas as pd
 from sklearn.utils import Bunch
 
 __all__ = [
-    "PNADC_VARIABLES",
-    "GEIH_VARIABLES",
-    "PNADC_FEATURES",
-    "GEIH_FEATURES",
-    "PNADC_CITATION",
     "GEIH_CITATION",
+    "GEIH_FEATURES",
+    "GEIH_VARIABLES",
+    "PNADC_CITATION",
+    "PNADC_FEATURES",
+    "PNADC_VARIABLES",
     "default_cache_dir",
     "fetch_pnadc",
     "load_geih",
@@ -240,7 +240,8 @@ def _quarter_url(year: int, quarter: int) -> str:
         raise FileNotFoundError(
             f"No PNAD Continua archive for {year} Q{quarter} at {listing_url}"
         )
-    return listing_url + sorted(names)[-1]
+    # The newest date-stamped file sorts last lexicographically.
+    return listing_url + max(names)
 
 
 def _pnadc_frame(year, quarter, cache_dir, employed_only, min_income):

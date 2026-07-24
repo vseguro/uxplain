@@ -49,15 +49,14 @@ from uxplain.uq_explainer import (
 )
 
 __all__ = [
-    "__version__",
     "STYLE",
+    "CQRConformalPredictor",
     "ClassificationConformalMethod",
     "ClassificationExplanationResult",
     "ClassificationMetric",
     "ConformalClassifierProtocol",
     "ConformalMethod",
     "ConformalPredictorProtocol",
-    "CQRConformalPredictor",
     "CrepesConformalClassifier",
     "CrepesConformalPredictor",
     "ExplanationResult",
@@ -70,6 +69,7 @@ __all__ = [
     "UncertaintyExplainerProtocol",
     "UncertaintyExplanationPipeline",
     "UncertaintyMetric",
+    "__version__",
     "ice_curves",
     "lime_local",
     "pdp_curve",

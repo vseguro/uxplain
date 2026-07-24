@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["tree_shap_values", "describe_fast_path"]
+__all__ = ["describe_fast_path", "tree_shap_values"]
 
 # Relative tolerance for the residual check that verifies the affine model.
 _LINEARITY_RTOL = 1e-6
@@ -104,7 +104,7 @@ def _tree_explainer(model, background):
             data=background,
             feature_perturbation="interventional",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - any failure here just means "not a tree ensemble"
         # Not a tree ensemble SHAP recognises (linear model, SVM, pipeline, ...).
         return None
 
