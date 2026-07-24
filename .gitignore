@@ -1,6 +1,43 @@
 # Data
 /data/
 
+# Downloaded microdata (PNAD Contínua / GEIH). Large survey archives; they are
+# re-fetched by uxplain.datasets, so they never belong in the repository.
+.cache/
+*.zip
+*.sav
+*.dta
+!docs/**/*.zip
+
+# Generated figures. Everything under figures/ is reproduced by
+# `python make_paper_figures.py`; drop this rule if you would rather ship the
+# rendered PNGs alongside the manuscript.
+/figures/
+
+# ---------------------------------------------------------------------------
+# JSS manuscript and its replication material.
+# This repository holds the library source only; the paper, its tables and the
+# scripts that render its figures live with the manuscript (Overleaf / a
+# separate paper repo), never in the library tree. These files stay in the
+# working directory but are never committed here.
+# ---------------------------------------------------------------------------
+*.tex
+make_paper_figures.py
+make_timing_table.py
+
+# LaTeX build artefacts from the manuscript
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.synctex.gz
+*.toc
+article.pdf
+
 # Mac OS-specific storage files
 .DS_Store
 
